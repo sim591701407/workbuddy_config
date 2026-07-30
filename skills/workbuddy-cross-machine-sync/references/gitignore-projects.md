@@ -16,28 +16,43 @@
 **/.workbuddy/artifact-index/
 **/.workbuddy/plans/
 
+**/.workbuddy/*.db
+**/.workbuddy/*.db-shm
+**/.workbuddy/*.db-wal
+
 # 依赖与构建产物（按需增删）
 **/node_modules/
 **/.venv/
 **/venv/
 **/__pycache__/
+*.pyc
 **/dist/
 **/build/
 **/.next/
 **/.output/
 
-# 大体积生成物：如需作为交付物保留，请用 Git LFS，或删掉下面几行
+# 大体积生成物：视频/压缩包不进 git（需要则上 Git LFS）
 **/*.mp4
 **/*.mov
-**/*.png
-**/*.jpg
-**/*.jpeg
-**/*.webp
-**/*.gif
+**/*.avi
+**/*.zip
+**/*.tar.gz
+
+# 注：图片（png/jpg/svg）通常就是交付成果，默认【同步】。
+# 只有当某项目产出海量图片撑爆仓库时，才在该项目下单独加 .gitignore 排除。
+
+# 密钥类，永不提交
+*.pem
+*.key
+.env
+.env.*
+!.env.example
 
 # 系统/编辑器
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
 ```
 
 # 跨平台换行符（仓库根目录 .gitattributes）
