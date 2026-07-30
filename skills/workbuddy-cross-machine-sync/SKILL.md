@@ -112,7 +112,13 @@ Then `git push -u origin main` again → username = GitHub *login name* (not the
 
 Also verify the remote URL matches the repo the user actually created (`git remote -v`); a renamed repo produces the same 403/404.
 
-SSH is the friction-free alternative and sidesteps all per-repo token scoping: `ssh-keygen -t ed25519`, add the public key to GitHub, then `git remote set-url origin git@github.com:<user>/<repo>.git`.
+SSH is the friction-free alternative and sidesteps all per-repo token scoping: `ssh-keygen -t ed25519`, add the public key to GitHub, then `git remote set-url origin git@github.com:<user>/<repo>.git`. On a corporate network that blocks port 22, fall back to `Hostname ssh.github.com` + `Port 443` in `~/.ssh/config`.
+
+## Onboarding the second machine (Windows)
+
+Read `references/windows-setup-checklist.md` — a step-by-step, copy-paste field guide covering preflight checks, SSH/PAT setup, the two takeover cases (fresh clone vs. grafting `.git` into an existing folder), verification, and the daily loop. Hand it to the user verbatim when they are about to sit down at the other machine.
+
+Chicken-and-egg note: the PowerShell scripts live *inside* the config repo, so they are unavailable until that repo is cloned. The checklist therefore spells out the raw commands; the scripts become available right after step 2.
 
 **Never push from the assistant's sandbox.** The sandbox has no GitHub credentials, has interactive prompts disabled, and its proxy intermittently returns `502 CONNECT tunnel failed`. Prepare the commit locally, then hand the user a single command to run in *their own* terminal. Also note the sandbox may be a read-only mirror of the user's filesystem — after the user pushes, the sandbox may still show no upstream tracking. Verify against the actual remote (ask the user), not the sandbox's `git branch -vv`.
 
