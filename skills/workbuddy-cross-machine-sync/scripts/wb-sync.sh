@@ -32,6 +32,9 @@ for repo in "${REPOS[@]}"; do
 
     if ! git pull --rebase; then
       echo "    [FAIL] pull failed - resolve manually"
+      # pull failed: restore the user's local changes we stashed above
+      # so they are never stranded (the working tree is unchanged, so pop is safe).
+      [ -n "$dirty" ] && { git stash pop >/dev/null 2>&1 && echo "    [OK] local changes restored from stash"; }
       continue
     fi
 
