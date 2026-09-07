@@ -1,0 +1,16 @@
+# WorkBuddy 配置仓库白名单（whitelist）
+# 默认忽略一切，仅放行以下需要跨设备同步的文件
+# 注意：settings.json / mcp.json 含机器专属路径与可能的密钥，两台机器环境不同则不同步
+
+/*
+!/.gitignore
+!/memory/
+!/skills/
+!/SOUL.md
+!/IDENTITY.md
+!/USER.md
+
+# 白名单目录内的常规垃圾文件
+*.bak
+.DS_Store
+Thumbs.db
