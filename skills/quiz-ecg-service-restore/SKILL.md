@@ -139,3 +139,33 @@ windows, which survive session teardown.
 
 ## After restoring
 Append a line to the workspace daily log `C:\Users\Administrator\WorkBuddy\2026-08-14-11-06-52\.workbuddy\memory\YYYY-MM-DD.md` recording: services restarted, task ids, tunnel capture timestamp, and verification result. Always offer the `start-*.bat` alternative.
+
+## 反向操作：关闭公网访问
+用户会说「关闭公网访问」（实验结束/下班/不想再对外暴露）。**默认只关隧道，保留本地两个服务**——
+保留后本机 `http://127.0.0.1:8765` 仍可用，且随时能再开；如果用户其实想全停，他会说「停掉服务/关掉系统」。
+
+```powershell
+# 1) 只停看门狗：按命令行匹配，绝不要按 PID 猜（见 pitfall 6）
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -like "*tunnel_watchdog.py*" } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+# 2) 停隧道进程
+Get-Process ssh -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+验证（缺一不可）：
+```bash
+# 公网应当不可达（502 或连接失败）
+curl -s -o /dev/null -w "pub:%{http_code}\n" --max-time 15 https://psyquiz2.serveousercontent.com/study1
+# 本地应当仍然正常
+curl -s --noproxy '*' -o /dev/null -w "quiz:%{http_code}\n" --max-time 6 http://127.0.0.1:8765/
+curl -s --noproxy '*' -o /dev/null -w "ecg:%{http_code}\n"  --max-time 6 http://127.0.0.1:8766/api/health
+# 日志应当停在关闭前的最后时间，没有新的重连
+tail -3 "<quiz-app>\data\tunnel_watchdog.log"
+```
+
+- **不要**清 `data/tunnel_url.txt`：它只被看门狗写入、没有任何读取方（已实测 grep 确认），
+  不会造成"死链接"展示，留着反而便于确认上次的公网地址。
+- 重新对外开放 = 只需再起看门狗（<裸 python> tunnel_watchdog.py）。若刚被限流，先静置约 6 分钟。
+- 关闭后**主动告知**：本地服务仍在跑；如需彻底停止请再说一句。
+
