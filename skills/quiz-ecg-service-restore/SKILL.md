@@ -36,6 +36,24 @@ curl -s -o /dev/null -w "pub:%{http_code}\n"  --max-time 15 https://psyquiz2.ser
 - `302` on 8765 root and `200` on 8766 health = healthy (do NOT mistake 302 for failure).
 - `502` + no LISTEN socket + no `python`/`ssh` processes = everything was reclaimed → full restart.
 
+### Step 1.5 — 先分流，别条件反射全量重启
+| 本地 8765/8766 | 公网 | 结论 | 动作 |
+|---|---|---|---|
+| 正常（302/200） | 502 | **只是隧道挂了** | 走「隧道限流恢复」：停看门狗 → `taskkill ssh` → **前台静置 ~6 分钟** → 重启看门狗。**不要动本地服务** |
+| 也挂了 / 无 LISTEN | 502 | 服务被回收 | 走 Step 2 全量重启 |
+
+2026-09-18 21:21 实测：本地两个服务一直健康，只有 serveo 隧道自然掉线（当天 20:08 建立，约 72 分钟后失效）。
+**隧道自然掉线后立即重连同样会被拒**，必须静置，不能靠看门狗自己重试（它每 60s 试一次，反而加剧限流）。
+
+停看门狗的正确姿势（**按命令行匹配，绝不按 PID 猜**，理由见 pitfall 6；`taskkill` 在本机不生效，用 PowerShell）：
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -like "*tunnel_watchdog.py*" } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-Process ssh -ErrorAction SilentlyContinue | Stop-Process -Force   # 清隧道残留
+```
+然后**前台**静置 6 分钟（分两步，别写成 `sleep; cmd`，见 pitfall 8），再单独启动看门狗。
+
 **Reliable process check on this box — PowerShell stdout does NOT return.** Write to a file and Read it:
 ```powershell
 $out = @(); $out += "listen8765=" + (Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue).Count
@@ -45,9 +63,14 @@ $out | Set-Content -Path "<tmp>\_stat.txt" -Encoding UTF8
 ```
 
 ### Step 2 — Clear leftovers, then start all three (order matters)
-```bash
-taskkill //IM ssh.exe //F 2>/dev/null; echo "ssh cleaned"
+清残留（`taskkill //IM` 在本机 Git Bash 不生效，见 pitfall 7）：
+```powershell
+Get-Process ssh -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -like "*tunnel_watchdog.py*" } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
+> 若两个 server 也要重起：**连同其父进程（venv 转发器）一起停**，否则残留的转发器会留下一个空壳（见 pitfall 6）。
 Then launch each in the background (`run_in_background: true`), **one command each**:
 1. `cd <quiz-app> && <venv-python> server.py`        → 8765  **必须用 venv Python（envs\default\Scripts），裸 Python 没有 openpyxl，所有服务端 xlsx 导出（/api/admin/export、/api/admin/user/export）会崩掉连接 → 公网表现为 502"网页无法运作"（2026-09-17 踩实，这正是"点下载提示网页无法连接"的根因）**
 2. `cd <ecg-analysis-app> && <python> server.py`     → 8766
@@ -82,8 +105,8 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 ```
 `curl`, `sleep`, `tail`, `for` loops all work once PATH is restored. Launching python via its absolute path also works without PATH.
 
-**2. serveo binding freeze (502 after a restart).** Restarting the quiz server makes the watchdog reconnect instantly; repeated reclaims of the same subdomain get throttled and **even random subdomains are refused**. Recovery: stop the watchdog, `taskkill //IM ssh.exe //F`, wait ~6 minutes, then restart the watchdog — it recaptures `psyquiz2` on the first try.
-**However:** if the services have been down for hours or days, the binding has already lapsed — skip the wait and start the watchdog directly (observed 2026-09-10, 09-16, 09-17: connects within ~5s every time).
+**2. serveo binding freeze (502 after a restart / 隧道自然掉线).** Restarting the quiz server makes the watchdog reconnect instantly; repeated reclaims of the same subdomain get throttled and **even random subdomains are refused**. Recovery: stop the watchdog, 清掉 ssh 残留（PowerShell `Stop-Process`，**不要**用 `taskkill //IM`，见 pitfall 7）, wait ~6 minutes, then restart the watchdog — it recaptures `psyquiz2` on the first try.
+**However:** if the services have been down for hours or days, the binding has already lapsed — skip the wait and start the watchdog directly (observed 2026-09-10, 09-16, 09-17: connects within ~5s every time). **反之，隧道是"刚刚掉线"的（之前一直在服务中），6 分钟静置是必须的 —— 2026-09-18 21:21 掉线后立即重连连续 6 次全部 `no URL captured`，静置到 21:31:57 重启后一次成功。**
 
 **3. The tunnel only fronts quiz-app (8765).** ecg-analysis-app (8766) is local-only by design; `start.sh`/`start.bat` are provided if the user wants it standalone.
 
@@ -95,6 +118,24 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 **5. Do not rely on these lasting.** All three live in session background tasks. Tell the user once more that
 `quiz-app\start-demo.bat` (quiz + watchdog) and `ecg-analysis-app\start.bat` launch them in independent
 windows, which survive session teardown.
+
+**6. ⚠️ Windows venv 的 `Scripts\python.exe` 是转发器，会起两层同名进程 —— 千万别把父进程当"空转冗余"杀掉。**
+实测：`envs\default\Scripts\python.exe server.py` 会出现**两个完全同名**的进程，父进程是 venv 转发器、
+真正的解释器是它的**子进程**（子进程才是持有 LISTEN socket 的那个）。
+转发器几乎不吃 CPU（实测 80 分钟仅 0.1s、单线程），极易被误判成"挂死的冗余进程"。
+**2026-09-18 21:25 就是踩了这个坑**：把 8765 的父进程当冗余杀掉 → 子进程（真服务）随之退出 → 服务中断，
+只能重连看门狗前重新拉起 server。**裸 `versions\3.13.12\python.exe`（8766 用）没有转发器，只有一个进程。**
+> 判断"是不是服务本身"不要看进程名和 CPU，要看 **`Get-NetTCPConnection -LocalPort 8765 -State Listen` 的 OwningProcess**，
+> 且**先看父子关系**（`ParentProcessId`）再决定动不动手。
+
+**7. `taskkill //PID` / `//IM` 在本机 Git Bash 里不生效。** 报 `错误: 无效参数/选项 - '//PID'`。
+（历史上 `taskkill //IM ssh.exe //F 2>/dev/null` 看起来"成功"其实是被 `2>/dev/null` 掩盖的失败。）
+**换 PowerShell**：`Stop-Process -Id <pid> -Force` / `Get-Process ssh | Stop-Process -Force`。
+且 PowerShell 的 stdout 不回传 —— 把结果 `Set-Content` 到文件再用 Read 读。
+
+**8. 后台任务里写 `sleep N; cd ... && python ...` 会被跳过 sleep。** 实测 `sleep 370; ...` 只隔了约 10 秒就执行了后面的命令。
+要"延时启动"，**分两步**：先在前台跑 `sleep 300`（记得带显式 `timeout`，如 330000，且 `sleep` 不会被自动转后台），
+再单独把目标命令作为后台任务启动。另：PATH 退化时 `sleep`/`date` 也会 `command not found`，照样要前置 export。
 
 ## After restoring
 Append a line to the workspace daily log `C:\Users\Administrator\WorkBuddy\2026-08-14-11-06-52\.workbuddy\memory\YYYY-MM-DD.md` recording: services restarted, task ids, tunnel capture timestamp, and verification result. Always offer the `start-*.bat` alternative.
